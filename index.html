@@ -1,0 +1,163 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>SEVENS × KURO · 訂貨系統 v2.0.0</title>
+<!--
+  SEVENS × KURO 訂貨系統 v2.0.0 (multi-file structure)
+  ------------------------------------------------------------------
+  index.html     畫面骨架 (markup only)
+  css/style.css  全部樣式
+  js/config.js   設定：版本、Google Sheet 連結、逾時  ← 唯一會改的檔案
+  js/data.js     內置後備資料（平常不用碰）
+  js/app.js      全部程式邏輯
+  部署：整個資料夾上傳 Netlify / 任何靜態主機；本機直接開 index.html 亦可。
+  ------------------------------------------------------------------
+-->
+<link rel="stylesheet" href="css/style.css">
+</head>
+
+
+<header>
+  <div class="logo"><span id="brandLogo">SEVENS <span>七道</span></span> <span class="ver">v2.0.0</span></div>
+  <div class="header-actions">
+    <div class="brand-toggle">
+      <button class="brand-btn active" data-brand="SEVENS" onclick="setBrand('SEVENS')">SEVENS</button>
+      <button class="brand-btn" data-brand="KURO" onclick="setBrand('KURO')">KURO</button>
+    </div>
+    <button class="btn btn-icon" onclick="showLog()" title="訂貨紀錄 Order log">🕘</button>
+    <button class="btn btn-icon" onclick="showDataPanel()" title="資料管理 Data">🗂️</button>
+    <button class="btn btn-lang" id="langBtn" onclick="toggleLang()">EN</button>
+  </div>
+</header>
+
+<!-- v1.8.3 data source: SEVENS_KURO_StockCheck_Merged.xlsx | jump bar for supplier/category | nest + pure supplier | short unit -->
+<!-- Mode tabs -->
+<div class="mode-tabs">
+  <div class="mode-tab active" data-mode="tomorrow" onclick="setMode('tomorrow')">明日 Tomorrow</div>
+  <div class="mode-tab" data-mode="week" onclick="setMode('week')">整週 Whole Week</div>
+</div>
+
+<!-- Category filter chips (fixed-schedule toggle lives at the end of the chips row) -->
+<div class="cat-wrap" id="catWrap">
+  <span class="cat-chip active" data-cat="all" onclick="setCategory('all')">全部</span>
+  <span class="cat-chip" data-cat="蔬菜" onclick="setCategory('蔬菜')">蔬菜</span>
+  <span class="cat-chip" data-cat="肉類" onclick="setCategory('肉類')">肉類</span>
+  <span class="cat-chip" data-cat="凍肉" onclick="setCategory('凍肉')">凍肉</span>
+  <span class="cat-chip" data-cat="豆製品" onclick="setCategory('豆製品')">豆製品</span>
+  <span class="cat-chip" data-cat="調味" onclick="setCategory('調味')">調味</span>
+  <span class="cat-chip" data-cat="乾貨" onclick="setCategory('乾貨')">乾貨</span>
+  <span class="cat-chip" data-cat="湯料" onclick="setCategory('湯料')">湯料</span>
+  <span class="cat-chip" data-cat="清潔" onclick="setCategory('清潔')">清潔</span>
+  <span class="cat-chip" data-cat="其他" onclick="setCategory('其他')">其他</span>
+</div>
+
+<!-- Progress -->
+<div class="progress-wrap">
+  <div class="progress-bar"><div class="progress-fill" id="progressFill" style="width:0%"></div></div>
+  <div class="progress-text" id="progressText">0 / 0</div>
+</div>
+
+<!-- Quick jump: suppliers (or categories) — avoids long scroll -->
+<div class="jump-wrap" id="jumpWrap"></div>
+
+<!-- Day tabs (Whole Week only) -->
+<div class="day-tabs" id="dayTabs"></div>
+
+<main id="itemList"></main>
+
+<div class="bottom-bar">
+  <button class="btn btn-reset" onclick="resetAll()">↺ Reset</button>
+  <button class="btn btn-summary" id="summaryBtn" onclick="showSummary()" disabled>
+    📋 Generate Summary
+  </button>
+</div>
+
+<!-- Summary Modal -->
+<div class="modal-overlay" id="modal">
+  <div class="modal">
+    <h2>
+      <span id="modalTitle">訂貨摘要 Order Summary</span>
+      <button class="modal-close" onclick="closeModal()">×</button>
+    </h2>
+    <div id="summaryContent"></div>
+    <div class="summary-actions">
+      <button class="btn btn-copy" onclick="copyText()">📄 複製 Copy</button>
+      <button class="btn btn-wa" onclick="forwardWhatsApp()">🟢 WhatsApp</button>
+      <button class="btn btn-pdf" onclick="downloadPDF()">⬇ PDF</button>
+    </div>
+  </div>
+</div>
+
+<!-- Data management: export CSV / JSON, import with preview, auto-backup & restore -->
+<div class="modal-overlay" id="dataOverlay">
+  <div class="modal">
+    <h2><span>🗂️ 資料管理 Data</span><button class="modal-close" onclick="closeDataPanel()">×</button></h2>
+    <div class="data-note">
+      匯出 → 用 Excel 編輯 → 匯入。<b>匯入會以檔案為準</b>：不在 CSV 內的列會被移除；未提供的品牌／表格保持不變。匯入前自動備份，可隨時還原。<br>
+      <span style="opacity:.75">Export → edit in Excel → import. Import replaces data <b>with what's in the file</b> (rows missing from the file are deleted); brands/tables not included are left untouched. An automatic backup is taken before every import.</span>
+    </div>
+    <h3 style="font-size:0.85rem;margin:14px 0 2px;color:var(--accent)">🔄 Google Sheet</h3>
+    <div class="dl-row">
+      <button class="btn btn-copy" onclick="reloadSheet()">🔄 立即從 Sheet 更新 Reload now</button>
+    </div>
+    <div class="data-note">開啟 App 時會自動讀取 Sheet（編輯後約 5 分鐘同步）；此按鈕可立即重新讀取。The app reads the sheet on open (~5 min propagation); use this to force a refresh.</div>
+    <div class="data-note" id="dataSrcInfo" style="margin-top:6px"></div>
+    <h3 style="font-size:0.85rem;margin:14px 0 2px;color:var(--accent)">⬇ 匯出 Export</h3>
+    <div class="dl-row">
+      <button class="btn btn-copy" onclick="exportCSV('items')">📦 items.csv</button>
+      <button class="btn btn-copy" onclick="exportCSV('suppliers')">🚚 suppliers.csv</button>
+      <button class="btn btn-copy" onclick="exportCSV('json')">💾 備份 JSON</button>
+    </div>
+    <h3 style="font-size:0.85rem;margin:14px 0 2px;color:var(--accent)">⬆ 匯入 Import（.csv / .json，可多選）</h3>
+    <div class="dl-row">
+      <button class="btn btn-summary" onclick="document.getElementById('importFile').click()">📂 選擇檔案 Choose</button>
+      <button class="btn btn-pdf" id="confirmImportBtn" onclick="applyImport()" disabled>✓ 確認匯入 Confirm</button>
+      <button class="btn btn-reset" id="restoreBtn" onclick="restoreBackup()" style="display:none">↩ 還原 Restore</button>
+    </div>
+    <input type="file" id="importFile" accept=".csv,.json,.txt" multiple style="display:none" onchange="handleImportFiles(this.files)">
+    <div class="import-preview" id="importPreview">尚未選擇檔案 No file selected</div>
+  </div>
+</div>
+
+<!-- Generic dialog (replaces alert/confirm — some tablet WebViews swallow native dialogs) -->
+<div class="modal-overlay" id="dlgOverlay">
+  <div class="modal" style="border-radius:20px;">
+    <div id="dlgMsg" style="font-size:0.95rem;line-height:1.55;white-space:pre-line;"></div>
+    <div class="summary-actions" style="margin-top:18px;" id="dlgActions"></div>
+  </div>
+</div>
+
+<!-- Order log (audit trail) -->
+<div class="modal-overlay" id="logOverlay">
+  <div class="modal">
+    <h2><span id="logTitle">🕘 訂貨紀錄 Order Log</span>
+      <button class="modal-close" onclick="closeLog()">×</button></h2>
+    <div id="logContent"></div>
+    <div class="summary-actions">
+      <button class="btn btn-reset" onclick="clearLog()">🗑 清空 Clear</button>
+      <button class="btn btn-copy" onclick="copyLogText()">📄 複製全部 Copy all</button>
+    </div>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<!-- Photo-ready full-screen card for another phone to photograph -->
+<div class="photo-overlay" id="photoOverlay">
+  <div class="photo-card-wrap">
+    <div class="photo-card" id="photoCard"></div>
+  </div>
+  <div class="photo-toolbar">
+    <button class="btn btn-photo-copy" onclick="copyPhotoText()">📄 Copy</button>
+    <button class="btn btn-photo-done" onclick="closePhotoCard()">✓ Done</button>
+  </div>
+</div>
+
+
+<script src="js/config.js"></script>
+<script src="js/data.js"></script>
+<script src="js/app.js"></script>
+</body>
+</html>
