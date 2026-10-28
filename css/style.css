@@ -680,3 +680,48 @@
   .deliv-cap{font-size:.72rem;font-weight:700;color:#0f766e;padding:2px 4px 4px}
   .shop-name{font-size:1.05rem;font-weight:800}.deliv-date{font-size:.95rem;font-weight:700;color:#0f766e;margin:2px 0 6px}
   .day-cell.no-deliv{opacity:.35;background:#f1f5f9!important;border-style:dashed;cursor:not-allowed;pointer-events:none}
+
+
+/* ========== v2.0.1 additions ========== */
+/* MOQ warning banner (warn-not-block policy) */
+.moq-warn {
+  background: #fef2f2; color: #b91c1c; border: 1px solid #fecaca;
+  border-radius: 8px; padding: 8px 12px; font-size: 0.82rem; font-weight: 600;
+  margin: 4px 0 8px; line-height: 1.4;
+}
+
+/* Supplier footer action row */
+.supplier-footer {
+  display: flex; flex-wrap: wrap; gap: 6px;
+  padding: 10px 14px 12px;
+  border-top: 1px solid var(--border);
+  background: #f8fafc;
+  border-radius: 0 0 14px 14px;
+}
+.supplier-footer button {
+  border: none; border-radius: 10px; padding: 8px 12px; font-size: 0.78rem; font-weight: 700;
+  cursor: pointer; transition: .15s; flex: 1; min-width: 72px;
+}
+.supplier-footer .btn-skip-all {
+  background: #e2e8f0; color: #475569;
+}
+.supplier-footer .btn-sup-copy {
+  background: var(--accent-soft); color: var(--accent);
+}
+.supplier-footer .btn-sup-wa {
+  background: #25d366; color: #fff;
+}
+.supplier-footer .btn-sup-wa.disabled,
+.supplier-footer .btn-sup-photo.disabled {
+  opacity: 0.4; pointer-events: none; filter: grayscale(0.6);
+}
+.supplier-footer .btn-sup-photo {
+  background: #fef3c7; color: #92400e;
+}
+
+
+/* v2.0.2 preorder date picker */
+.preorder-date-row { display: flex; align-items: center; gap: 6px; padding: 8px 14px; flex-wrap: wrap; }
+.preorder-date-row input[type="date"] { border: 1px solid var(--border); border-radius: 10px; padding: 8px 10px; font-size: 0.9rem; color: var(--text); background: #fff; flex: 1; min-width: 140px; }
+.preorder-date-row button { border: none; border-radius: 8px; padding: 7px 10px; font-size: 0.78rem; font-weight: 700; cursor: pointer; background: var(--accent-soft); color: var(--accent); transition: .15s; }
+.preorder-date-row button:active { transform: scale(0.96); }

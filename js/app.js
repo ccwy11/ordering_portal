@@ -179,10 +179,12 @@ function emptyWeekArr(fill) {
 }
 
 let lang = 'zh';
-let mode = 'tomorrow';          // 'tomorrow' | 'week'
+let mode = 'tomorrow';          // 'tomorrow' | 'preorder'
 
 let activeCategory = 'all';
 let activeDay = firstEditableDay(); // e.g. if today Fri → Sat
+let preorderDate = null;        // YYYY-MM-DD for preorder mode
+let preorderState = {};         // id -> { qty, skipped } for preorder mode
 let state = {};                 // id -> { qty, skipped } for tomorrow mode
 let weekState = {};             // id -> [qty0..qty6]
 let weekSkip = {};              // id -> [bool0..bool6] skip flags per day
@@ -208,10 +210,12 @@ function metaUnit(item) {
 }
 function qtyHtml(item, q) { const pr = unitProc(item.unit); return `<b>${q} ${unitReal(item.unit)}</b>${pr ? `<br><span style="${PROC_STYLE}">${pr}</span>` : ''}`; }
 function qtyPlain(item, q) {
-  // Forward-friendly: qty+unit first, processed unit contained in（）
+  // Forward-friendly: qty+unit first, processed unit contained in（）, notes appended
   const pr = unitProc(item.unit);
   const tail = `${q} ${unitReal(item.unit)}`;
-  return pr ? `${tail}（${lang === 'zh' ? '加工單位' : 'Processed'}：${pr}）` : tail;
+  let line = pr ? `${tail}（${lang === 'zh' ? '加工單位' : 'Processed'}：${pr}）` : tail;
+  if (item.notes) line += `（${item.notes}）`;
+  return line;
 }
 /** Summary modal row: name (left) — processed unit (center) — qty + unit (right) */
 function summaryRowHtml(name, item, qty) {
@@ -224,6 +228,15 @@ function nextDeliverySlot(item) {
   const t = todayIndex();
   for (let d = t + 1; d <= t + 7; d++) if (isDeliveryDay(item, d)) return d;
   return t + 1;
+}
+function nextDeliverySlotForDate(item, dateStr) {
+  // Return slot index for the first delivery on/after the given date
+  if (!dateStr) return tomorrowIndex();
+  const target = new Date(dateStr + 'T00:00:00');
+  const t = todayIndex();
+  const targetSlot = Math.round((target - new Date()) / 86400000) + t;
+  for (let d = targetSlot; d <= targetSlot + 7; d++) if (isDeliveryDay(item, d)) return d;
+  return targetSlot;
 }
 function deliveryLabel(days) {
   const d = [...new Set(days || [])].sort(), zh = lang === 'zh';
@@ -323,6 +336,7 @@ function saveState() {
   try {
     localStorage.setItem(storageKey(), JSON.stringify({
       lang, mode, activeCategory, activeDay, state, weekState, weekSkip, fixedOverride,
+      preorderDate, preorderState,
       weekStart: mondayStamp(), tomorrowStamp: dayStamp(dateForSlot(tomorrowIndex()))
     }));
   } catch (e) { }
@@ -336,11 +350,14 @@ function loadState() {
     const data = JSON.parse(raw);
     if (data.lang) lang = data.lang;
     if (data.mode) mode = data.mode;
+    if (mode === 'week') mode = 'preorder'; // migrate old week mode to preorder
     if (data.activeCategory) activeCategory = data.activeCategory;
     if (typeof data.activeDay === 'number') activeDay = data.activeDay;
     if (data.state) state = data.state;
     if (data.weekState) weekState = data.weekState;
     if (data.weekSkip) weekSkip = data.weekSkip;
+    if (data.preorderDate) preorderDate = data.preorderDate;
+    if (data.preorderState) preorderState = data.preorderState;
     fixedOverride = data.fixedOverride || {};
     // Roll over stale data: shift week slots if the saved week is older
     if (data.weekStart && data.weekStart !== mondayStamp()) {
@@ -408,22 +425,27 @@ function measureStickyChrome() {
 
 function setMode(m) {
   mode = m;
-  document.body.classList.toggle('mode-week', m === 'week');
+  document.body.classList.toggle('mode-week', m === 'preorder');
   document.body.classList.toggle('mode-tomorrow', m === 'tomorrow');
   document.querySelectorAll('.mode-tab').forEach(el => {
     el.classList.toggle('active', el.dataset.mode === m);
   });
-  document.getElementById('dayTabs').classList.toggle('show', m === 'week');
+  document.getElementById('dayTabs').classList.toggle('show', m === 'preorder');
   // Label "明日" with actual target weekday (e.g. 六 when today is 五)
   const tLabel = lang === 'zh' ? DAYS[dayOfWeek(tomorrowIndex())] : DAYS_EN[dayOfWeek(tomorrowIndex())];
   document.querySelectorAll('.mode-tab').forEach(el => {
     if (el.dataset.mode === 'tomorrow') {
       el.textContent = lang === 'zh' ? `明日（${tLabel}）` : `Tomorrow (${tLabel})`;
     }
-    if (el.dataset.mode === 'week') {
-      el.textContent = lang === 'zh' ? '整週 Whole Week' : 'Whole Week 整週';
+    if (el.dataset.mode === 'preorder') {
+      el.textContent = lang === 'zh' ? '預訂 Pre-order' : 'Pre-order 預訂';
     }
   });
+  if (mode === 'preorder' && !preorderDate) {
+    const t = new Date();
+    t.setDate(t.getDate() + 1);
+    preorderDate = t.toISOString().slice(0, 10);
+  }
   saveState();
   render();
 }
@@ -462,6 +484,41 @@ function getFilteredItems() {
 
 function renderDayTabs() {
   const wrap = document.getElementById('dayTabs');
+  if (mode === 'preorder') {
+    // Show date picker for preorder mode
+    const today = new Date().toISOString().slice(0, 10);
+    wrap.innerHTML = `<div class="deliv-cap">📅 ${lang === 'zh' ? '選擇預訂日期' : 'Choose pre-order date'}</div>
+      <div class="preorder-date-row">
+        <input type="date" id="preorderDateInput" value="${preorderDate || ''}" min="${today}">
+        <button type="button" id="preorderQuickToday">${lang === 'zh' ? '今天' : 'Today'}</button>
+        <button type="button" id="preorderQuickTomorrow">${lang === 'zh' ? '明天' : 'Tomorrow'}</button>
+        <button type="button" id="preorderQuick3d">+3${lang === 'zh' ? '天' : 'd'}</button>
+        <button type="button" id="preorderQuick1w">+1${lang === 'zh' ? '週' : 'w'}</button>
+      </div>`;
+    // Bind events after render
+    requestAnimationFrame(() => {
+      const inp = document.getElementById('preorderDateInput');
+      if (inp) {
+        inp.addEventListener('change', e => { preorderDate = e.target.value; saveState(); render(); });
+      }
+      const setDate = (offset) => {
+        const d = new Date(); d.setDate(d.getDate() + offset);
+        preorderDate = d.toISOString().slice(0, 10);
+        saveState(); render();
+      };
+      const btns = {
+        preorderQuickToday: 0,
+        preorderQuickTomorrow: 1,
+        preorderQuick3d: 3,
+        preorderQuick1w: 7,
+      };
+      Object.entries(btns).forEach(([id, offset]) => {
+        const btn = document.getElementById(id);
+        if (btn) btn.addEventListener('click', () => setDate(offset));
+      });
+    });
+    return;
+  }
   if (mode !== 'week') { wrap.innerHTML = ''; return; }
 
   function rowHtml(weekOffset, labelZh, labelEn, weekClass) {
@@ -500,6 +557,9 @@ function calcSupplierTotal(supplier) {
     const price = item.unit_price || 0;
     if (mode === 'tomorrow') {
       const s = state[item.id];
+      if (s && !s.skipped && s.qty > 0) total += s.qty * price;
+    } else if (mode === 'preorder') {
+      const s = preorderState[item.id];
       if (s && !s.skipped && s.qty > 0) total += s.qty * price;
     } else {
       // Week mode: MOQ against the active (editable) day only
@@ -646,22 +706,27 @@ function render() {
             <span class="supplier-count">${count}</span>
           </div>
           <div class="supplier-meta">
-            <span class="delivery">${lang === 'zh' ? '車期' : 'Delivery'} ${supDeliv(supplier)}${mode === 'tomorrow' ? ' · 📦 ' + supNext(supplier) : ''}</span>
+            <span class="delivery">${lang === 'zh' ? '車期' : 'Delivery'} ${supDeliv(supplier)}${mode === 'tomorrow' ? ' · 📦 ' + supNext(supplier) : mode === 'preorder' && preorderDate ? ' · 📦 ' + fmtDeliv(nextDeliverySlotForDate({ supplier }, preorderDate)) : ''}</span>
             ${moqHtml}
-          </div>
-          <div class="supplier-actions">
-            <!-- No inline onclick here: the document-level [data-action] delegation handles these.
-                 Inline onclick + delegation used to fire both, making "Skip all" skip then immediately un-skip. -->
-            <button type="button" class="btn-skip-all" data-action="skip-all" data-sup-idx="${supIdx}" data-supplier="${supAttr}">${skipAllLabel}</button>
-            <button type="button" class="btn-vendor-sum" data-action="vendor-sum" data-sup-idx="${supIdx}" data-supplier="${supAttr}">${vendorSumLabel}</button>
           </div>
         </div>`;
 
     groupItems.forEach(item => {
       if (mode === 'tomorrow') html += renderTomorrowCard(item, false);
+      else if (mode === 'preorder') html += renderPreorderCard(item, false);
       else html += renderWeekCard(item, false);
     });
-    html += `</div>`;
+    // v2.0.1: supplier action footer at bottom (was in header)
+    const st = getMoqStatus(supplier);
+    const underMoq = !st.ok && st.total > 0;
+    const moqWarnAttr = underMoq ? ` title="${lang === 'zh' ? '未達 MOQ，無法轉發' : 'Under MOQ — cannot forward'}"` : '';
+    const disabledCls = underMoq ? ' disabled' : '';
+    html += `<div class="supplier-footer">
+        <button type="button" class="btn-skip-all" data-action="skip-all" data-sup-idx="${supIdx}" data-supplier="${supAttr}">${skipAllLabel}</button>
+        <button type="button" class="btn-sup-copy" data-action="vendor-copy" data-sup-idx="${supIdx}" data-supplier="${supAttr}">📄 ${lang === 'zh' ? '複製' : 'Copy'}</button>
+        <button type="button" class="btn-sup-wa${disabledCls}" data-action="vendor-wa" data-sup-idx="${supIdx}" data-supplier="${supAttr}"${moqWarnAttr}>🟢 WhatsApp</button>
+        <button type="button" class="btn-sup-photo${disabledCls}" data-action="vendor-sum" data-sup-idx="${supIdx}" data-supplier="${supAttr}"${moqWarnAttr}>📷 ${lang === 'zh' ? '本商摘要' : 'Photo'}</button>
+      </div></div>`;
   }
   list.innerHTML = html;
   renderJumpBar(items);
@@ -701,6 +766,34 @@ function renderTomorrowCard(item, showSupplier) {
         <input class="qty-input" type="number" value="${s.qty}" min="0"
                onchange="setQty('${item.id}', this.value)" ${s.skipped ? 'disabled' : ''}>
         <button class="qty-btn plus" onclick="changeQty('${item.id}', 1)">+</button>
+        <span class="unit-label">${shortUnit(item.unit)}</span>
+      </div>
+    </div>`;
+}
+
+function renderPreorderCard(item, showSupplier) {
+  const s = preorderState[item.id] || { qty: 0, skipped: false };
+  const name = (lang === 'zh' || !item.item_en) ? item.item_zh : item.item_en;
+  const highlighted = !s.skipped && s.qty > 0;
+  const slot = nextDeliverySlotForDate(item, preorderDate);
+  const later = slot !== tomorrowIndex();
+  const noDelivTag = `<span class="no-deliv-tag" style="background:${later ? '#fef3c7;color:#92400e' : '#ccfbf1;color:#0f766e'}">📦 ${lang === 'zh' ? '送貨' : 'Deliver'} ${fmtDeliv(slot)}</span>`;
+  return `
+    <div class="item-card ${isFixed(item) ? 'fixed-card' : ''} ${s.skipped ? 'skipped' : ''} ${highlighted ? 'has-qty' : ''}" id="card-${item.id}">
+      <div class="item-top">
+        <div class="item-info">
+          <div class="item-name">${name}${noDelivTag}<button class="pin-btn ${isFixed(item) ? 'on' : ''}" onclick="toggleFixed('${item.id}')" title="固定排程">📌</button></div>
+          ${showSupplier ? `<div class="item-supplier-tag">${item.supplier}</div>` : ''}
+          <div class="item-meta">${metaUnit(item)}${item.default_qty != null ? ` · 建議 ${item.default_qty}` : ""}</div>
+          ${item.notes ? `<div class="item-notes">${item.notes}</div>` : ''}
+        </div>
+        <button class="skip-btn" onclick="togglePreorderSkip('${item.id}')">${s.skipped ? (lang === 'zh' ? '已跳過' : 'Skipped') : (lang === 'zh' ? '跳過' : 'Skip')}</button>
+      </div>
+      <div class="controls-row">
+        <button class="qty-btn" onclick="changePreorderQty('${item.id}', -1)">−</button>
+        <input class="qty-input" type="number" value="${s.qty}" min="0"
+               onchange="setPreorderQty('${item.id}', this.value)" ${s.skipped ? 'disabled' : ''}>
+        <button class="qty-btn plus" onclick="changePreorderQty('${item.id}', 1)">+</button>
         <span class="unit-label">${shortUnit(item.unit)}</span>
       </div>
     </div>`;
@@ -816,6 +909,27 @@ function toggleSkip(id) {
   render();
 }
 
+// ===== PREORDER helpers =====
+function ensurePreorderItem(id) {
+  if (!preorderState[id]) preorderState[id] = { qty: 0, skipped: false };
+}
+function setPreorderQty(id, val) {
+  ensurePreorderItem(id);
+  preorderState[id].qty = Math.max(0, parseInt(val, 10) || 0);
+  saveState(); render();
+}
+function changePreorderQty(id, delta) {
+  ensurePreorderItem(id);
+  if (preorderState[id].skipped) return;
+  preorderState[id].qty = Math.max(0, (preorderState[id].qty || 0) + delta);
+  saveState(); render();
+}
+function togglePreorderSkip(id) {
+  ensurePreorderItem(id);
+  preorderState[id].skipped = !preorderState[id].skipped;
+  saveState(); render();
+}
+
 function toggleWeekSkip(id) {
   if (isDayLocked(activeDay)) {
     showToast(lang === 'zh' ? '此日已鎖定' : 'Day locked');
@@ -909,6 +1023,10 @@ function getVendorRows(supplier, dayIndex) {
       const s = state[item.id];
       if (!s || s.skipped || s.qty <= 0) return;
       rows.push({ item, qty: s.qty });
+    } else if (mode === 'preorder') {
+      const s = preorderState[item.id];
+      if (!s || s.skipped || s.qty <= 0) return;
+      rows.push({ item, qty: s.qty });
     } else {
       ensureWeekArrays(item.id);
       const sk = weekSkip[item.id][day];
@@ -949,7 +1067,7 @@ function showVendorPhoto(supplier, dayIndex) {
   const todayStr = new Date().toLocaleDateString('zh-HK', { year: 'numeric', month: '2-digit', day: '2-digit', weekday: 'short' });
 
   let bodyHtml = '';
-  let plain = lang === 'zh' ? `【${brandTitle()} 訂貨】\n\n` : `[${brandTitle()} Order]\n\n`;
+  let plain = '';
   let totalItems = 0;
 
   if (mode === 'tomorrow') {
@@ -972,12 +1090,8 @@ function showVendorPhoto(supplier, dayIndex) {
       grandTotal += t;
       if (moqT > 0 && t > 0 && t < moqT) shortSlots.push(`${fmtDeliv(sl)} ($${t}/$${moqT})`);
     });
-    if (shortSlots.length > 0) {
-      const msg = (lang === 'zh' ? '以下送貨日未達 MOQ：\n' : 'Under MOQ for:\n') + shortSlots.join('\n');
-      showToast(lang === 'zh' ? '未達 MOQ' : 'Under MOQ');
-      uiAlert(msg);
-      return;
-    }
+    // v2.0.1: warn-not-block — show red banner but still allow photo card (copy OK, WhatsApp/Photo blocked per-supplier)
+    const moqWarnHtml = shortSlots.length ? `<div class="moq-warn" style="margin-bottom:8px">⚠️ ${lang === 'zh' ? '未達 MOQ' : 'Under MOQ'} · ${shortSlots.join(' · ')}</div>` : '';
     bodyHtml = `<div class="shop-name">🏪 ${supplier}</div>`;
     slots.forEach((sl, bi) => {
       let table = '';
@@ -992,8 +1106,33 @@ function showVendorPhoto(supplier, dayIndex) {
         </div>`;
     });
     totalItems = rows.length;
+    bodyHtml = moqWarnHtml + bodyHtml;
     bodyHtml += `<div class="row-count">${rows.length} ${lang === 'zh' ? '項' : 'items'} · $${grandTotal} / MOQ $${meta.moq || '—'}</div>`;
     _photoGroups = slots.map(sl => ({ supplier, day: sl, rows: bySlot[sl] }));
+  } else if (mode === 'preorder') {
+    const rows = getVendorRows(supplier);
+    if (rows.length === 0) { showToast(lang === 'zh' ? '此商戶暫無訂貨' : 'No order for this vendor'); return; }
+    let table = '';
+    plain = '';
+    const sl = nextDeliverySlotForDate(rows[0].item, preorderDate);
+    rows.forEach(({ item, qty }) => {
+      table += `<tr><td>${item.item_zh}${item.item_en ? `<span class="en">${item.item_en}</span>` : ""}</td><td class="qty">${qtyHtml(item, qty)}</td></tr>`;
+      plain += `• ${item.item_zh}  ${qtyPlain(item, qty)}\n`;
+    });
+    const moqT = meta.moq || 0;
+    let grandTotal = 0;
+    rows.forEach(({ item, qty }) => { grandTotal += qty * (item.unit_price || 0); });
+    grandTotal = Math.round(grandTotal);
+    const short = moqT > 0 && grandTotal > 0 && grandTotal < moqT;
+    const moqWarnHtml = short ? `<div class="moq-warn" style="margin-bottom:8px">⚠️ ${lang === 'zh' ? '未達 MOQ' : 'Under MOQ'} · $${grandTotal}/$${moqT}</div>` : '';
+    bodyHtml = moqWarnHtml + `<div class="shop-name">🏪 ${supplier}</div>`;
+    bodyHtml += `<div class="photo-day-block" style="border-left:3px solid #0f766e;padding-left:8px;margin:6px 0 4px">
+          <div class="photo-day-title" style="color:#0f766e;font-weight:700;font-size:0.85rem;margin-bottom:3px">📅 ${lang === 'zh' ? '預訂日' : 'Pre-order'} ${preorderDate || '—'} · ${fmtDeliv(sl)}</div>
+          <table>${table}</table>
+        </div>`;
+    totalItems = rows.length;
+    bodyHtml += `<div class="row-count">${rows.length} ${lang === 'zh' ? '項' : 'items'} · $${grandTotal} / MOQ $${meta.moq || '—'}</div>`;
+    _photoGroups = [{ supplier, day: sl, rows }];
   } else {
     // Week mode: show ALL dates that have edits for this vendor; an explicit dayIndex limits to that one date
     let groups = getVendorDayGroups(supplier);
@@ -1002,8 +1141,14 @@ function showVendorPhoto(supplier, dayIndex) {
       showToast(lang === 'zh' ? '此商戶暫無訂貨' : 'No order for this vendor');
       return;
     }
-    plain = lang === 'zh' ? `【${brandTitle()} 訂貨】\n\n` : `[${brandTitle()} Order]\n\n`;
+    plain = '';
     bodyHtml = `<div class="shop-name">🏪 ${supplier}</div>`;
+    const anyShort = groups.some(g => {
+      const moq = meta.moq || 0;
+      return moq > 0 && g.total > 0 && g.total < moq;
+    });
+    const moqWarnHtmlWeek = anyShort ? `<div class="moq-warn" style="margin-bottom:8px">⚠️ ${lang === 'zh' ? '未達 MOQ' : 'Under MOQ'}</div>` : '';
+    bodyHtml = moqWarnHtmlWeek + bodyHtml;
     groups.forEach(g => {
       const color = g.isNext ? '#6d28d9' : '#0f766e';
       const moq = meta.moq || 0;
@@ -1071,7 +1216,7 @@ function closePhotoCard() {
 function copyPhotoText() {
   copyTextUtil(_photoText).then(() => {
     logSend('📷', _photoGroups);
-    showToast(lang === 'zh' ? '已複製並記錄，可貼到群組' : 'Copied & logged — paste to group');
+    showToast(lang === 'zh' ? '✅ 已複製並記錄，可貼到群組\n💡 貼上後請檢查數量是否正確' : '✅ Copied & logged — paste to group\n💡 Please double-check quantities after pasting');
   }).catch(() => showToast('Copy failed'));
 }
 
@@ -1087,6 +1232,7 @@ async function resetAll() {
   if (isDayLocked(activeDay)) activeDay = firstEditableDay();
   MASTER().forEach(item => {
     state[item.id] = { qty: 0, skipped: false };
+    preorderState[item.id] = { qty: 0, skipped: false };
     weekState[item.id] = emptyWeekArr(0);
     weekSkip[item.id] = emptyWeekArr(false);
   });
@@ -1101,6 +1247,11 @@ function updateProgress() {
   if (mode === 'tomorrow') {
     items.forEach(item => {
       const s = state[item.id];
+      if (s && (s.skipped || s.qty > 0)) done++;
+    });
+  } else if (mode === 'preorder') {
+    items.forEach(item => {
+      const s = preorderState[item.id];
       if (s && (s.skipped || s.qty > 0)) done++;
     });
   } else {
@@ -1120,6 +1271,9 @@ function updateProgress() {
     if (mode === 'tomorrow') {
       const s = state[item.id];
       if (s && !s.skipped && s.qty > 0) orderedSup.add(item.supplier);
+    } else if (mode === 'preorder') {
+      const s = preorderState[item.id];
+      if (s && !s.skipped && s.qty > 0) orderedSup.add(item.supplier);
     } else {
       const sk = (weekSkip[item.id] || [])[activeDay];
       const q = (weekState[item.id] || [])[activeDay] || 0;
@@ -1137,6 +1291,9 @@ function updateProgress() {
   MASTER().forEach(item => {
     if (mode === 'tomorrow') {
       const s = state[item.id];
+      if (s && !s.skipped && s.qty > 0) anyOrdered++;
+    } else if (mode === 'preorder') {
+      const s = preorderState[item.id];
       if (s && !s.skipped && s.qty > 0) anyOrdered++;
     } else {
       const sk = (weekSkip[item.id] || [])[activeDay];
@@ -1181,21 +1338,66 @@ function showSummary() {
         if (t > 0 && t < moq) shortGroups.push(`${g.supplier} · ${fmtDeliv(g.slot)} ($${t}/$${moq})`);
       }
     });
-    if (shortGroups.length > 0) {
-      const msg = (lang === 'zh'
-        ? '以下送貨日未達最低訂貨額 (MOQ)，無法產生摘要：\n'
-        : 'These delivery dates are under MOQ – cannot generate summary:\n') + shortGroups.join('\n');
-      showToast(lang === 'zh' ? '未達 MOQ，無法產生摘要' : 'Under MOQ – blocked');
-      uiAlert(msg);
-      return;
-    }
+    // v2.0.1: warn-not-block — under-MOQ suppliers get a red banner; generate still allowed
+    const underMoqMap = {};
+    shortGroups.forEach(g => {
+      const sup = g.split(' · ')[0];
+      underMoqMap[sup] = g;
+    });
     for (const { supplier, slot, rows } of Object.values(groups)) {
       const meta = SUPPLIER_META[supplier] || {};
       let gTotal = 0;
       rows.forEach(({ item, qty }) => { gTotal += qty * (item.unit_price || 0); });
       gTotal = Math.round(gTotal);
+      const isUnderMoq = underMoqMap[supplier];
+      const moqBanner = isUnderMoq ? `<div class="moq-warn">⚠️ ${lang === 'zh' ? '未達 MOQ' : 'Under MOQ'} · ${isUnderMoq}</div>` : '';
       html += `<div class="summary-section">
-        <h3>${supplier} <small style="font-weight:500;color:#64748b">📅 ${lang === 'zh' ? '送貨日' : 'Delivery'} ${fmtDeliv(slot)} · $${gTotal} / MOQ $${meta.moq || '—'}</small></h3>`;
+        <h3>${supplier} <small style="font-weight:500;color:#64748b">📅 ${lang === 'zh' ? '送貨日' : 'Delivery'} ${fmtDeliv(slot)} · $${gTotal} / MOQ $${meta.moq || '—'}</small></h3>${moqBanner}`;
+      rows.forEach(({ item, qty }) => {
+        const name = (lang === 'zh' || !item.item_en) ? item.item_zh : item.item_en;
+        html += summaryRowHtml(name, item, qty);
+      });
+      html += `<div class="vendor-sum-actions">
+        <button type="button" class="btn btn-vendor-sum" data-action="vendor-sum" data-supplier="${encodeURIComponent(supplier)}">${lang === 'zh' ? '📷 截圖給另一部手機' : '📷 Photo for other phone'}</button>
+      </div></div>`;
+    }
+  } else if (mode === 'preorder') {
+    const groups = {};
+    MASTER().forEach(item => {
+      const s = preorderState[item.id];
+      if (!s || s.skipped || s.qty <= 0) return;
+      if (activeCategory !== 'all') {
+        if ((item.cat || '') !== activeCategory) return;
+      }
+      const sl = nextDeliverySlotForDate(item, preorderDate), k = item.supplier + '||' + sl;
+      if (!groups[k]) groups[k] = { supplier: item.supplier, slot: sl, rows: [] };
+      groups[k].rows.push({ item, qty: s.qty });
+    });
+    const shortGroups = [];
+    Object.values(groups).forEach(g => {
+      const moq = (SUPPLIER_META[g.supplier] || {}).moq || 0;
+      if (moq > 0) {
+        let t = 0;
+        g.rows.forEach(({ item, qty }) => { t += qty * (item.unit_price || 0); });
+        t = Math.round(t);
+        if (t > 0 && t < moq) shortGroups.push(`${g.supplier} · ${fmtDeliv(g.slot)} ($${t}/$${moq})`);
+      }
+    });
+    const underMoqMap = {};
+    shortGroups.forEach(g => {
+      const sup = g.split(' · ')[0];
+      underMoqMap[sup] = g;
+    });
+    for (const { supplier, slot, rows } of Object.values(groups)) {
+      const meta = SUPPLIER_META[supplier] || {};
+      let gTotal = 0;
+      rows.forEach(({ item, qty }) => { gTotal += qty * (item.unit_price || 0); });
+      gTotal = Math.round(gTotal);
+      const isUnderMoq = underMoqMap[supplier];
+      const moqBanner = isUnderMoq ? `<div class="moq-warn">⚠️ ${lang === 'zh' ? '未達 MOQ' : 'Under MOQ'} · ${isUnderMoq}</div>` : '';
+      const preDate = preorderDate ? `${preorderDate} ` : '';
+      html += `<div class="summary-section">
+        <h3>${supplier} <small style="font-weight:500;color:#64748b">📅 ${lang === 'zh' ? '預訂日' : 'Pre-order'} ${preDate}· $${gTotal} / MOQ $${meta.moq || '—'}</small></h3>${moqBanner}`;
       rows.forEach(({ item, qty }) => {
         const name = (lang === 'zh' || !item.item_en) ? item.item_zh : item.item_en;
         html += summaryRowHtml(name, item, qty);
@@ -1260,6 +1462,77 @@ function closeModal() {
   document.getElementById('modal').classList.remove('show');
 }
 
+/** Build order text for a single supplier (used by per-supplier footer buttons) */
+function buildSupplierOrderText(supplier) {
+  let text = lang === 'zh' ? `【${brandTitle()} 訂貨】\n` : `[${brandTitle()} Order]\n`;
+  if (mode === 'tomorrow') {
+    const rows = getVendorRows(supplier);
+    if (!rows.length) return text + (lang === 'zh' ? '\n（無訂貨）' : '\n(no items)');
+    const bySlot = {};
+    rows.forEach(r => { const sl = nextDeliverySlot(r.item); (bySlot[sl] = bySlot[sl] || []).push(r); });
+    Object.keys(bySlot).map(Number).sort((x, y) => x - y).forEach((sl, bi) => {
+      text += `${bi ? '\n' : ''}\n━━━━━━━━━━\n🏪 ${supplier}\n📅 送貨日：${fmtDeliv(sl)}\n`;
+      bySlot[sl].forEach(({ item, qty }) => {
+        const name = (lang === 'zh' || !item.item_en) ? item.item_zh : item.item_en;
+        text += `• ${name}  ${qtyPlain(item, qty)}\n`;
+      });
+    });
+  } else if (mode === 'preorder') {
+    const rows = getVendorRows(supplier);
+    if (!rows.length) return text + (lang === 'zh' ? '\n（無訂貨）' : '\n(no items)');
+    const sl = nextDeliverySlotForDate(rows[0].item, preorderDate);
+    text += `\n━━━━━━━━━━\n🏪 ${supplier}\n📅 ${lang === 'zh' ? '預訂日' : 'Pre-order'}：${preorderDate || '—'} · ${fmtDeliv(sl)}\n`;
+    rows.forEach(({ item, qty }) => {
+      const name = (lang === 'zh' || !item.item_en) ? item.item_zh : item.item_en;
+      text += `• ${name}  ${qtyPlain(item, qty)}\n`;
+    });
+  } else {
+    const bySup = {};
+    for (let d = 0; d < WEEK_LEN; d++) {
+      MASTER().filter(i => i.supplier === supplier).forEach(item => {
+        ensureWeekArrays(item.id);
+        if (!weekSkip[item.id][d] && (weekState[item.id][d] || 0) > 0) {
+          (bySup[d] = bySup[d] || []).push({ item, qty: weekState[item.id][d] });
+        }
+      });
+    }
+    const days = Object.keys(bySup).map(Number).sort((a, b) => a - b);
+    if (!days.length) return text + (lang === 'zh' ? '\n（無訂貨）' : '\n(no items)');
+    days.forEach((d, bi) => {
+      text += `${bi ? '\n' : ''}\n━━━━━━━━━━\n🏪 ${supplier}\n📅 送貨日：${fmtDeliv(d)}\n`;
+      bySup[d].forEach(({ item, qty }) => {
+        const name = (lang === 'zh' || !item.item_en) ? item.item_zh : item.item_en;
+        text += `• ${name}  ${qtyPlain(item, qty)}\n`;
+      });
+    });
+  }
+  return text;
+}
+function copySupplierOrder(supplier) {
+  const text = buildSupplierOrderText(supplier);
+  copyTextUtil(text).then(() => {
+    logSend('📄', [{ supplier, day: mode === 'tomorrow' ? nextDeliverySlot(MASTER().find(i => i.supplier === supplier)) : activeDay, rows: getVendorRows(supplier).map(({ item, qty }) => ({ item, qty })) }]);
+    showToast(lang === 'zh' ? '✅ 已複製\n💡 貼上後請檢查數量是否正確' : '✅ Copied\n💡 Please double-check quantities after pasting');
+  }).catch(() => showToast('Copy failed'));
+}
+function forwardSupplierWhatsApp(supplier) {
+  const st = getMoqStatus(supplier);
+  if (!st.ok && st.total > 0) {
+    showToast(lang === 'zh' ? '未達 MOQ，無法轉發' : 'Under MOQ — cannot forward');
+    return;
+  }
+  const text = buildSupplierOrderText(supplier);
+  const w = window.open('https://wa.me/?text=' + encodeURIComponent(text), '_blank');
+  if (!w) {
+    copyTextUtil(text).then(() => showToast(lang === 'zh'
+      ? '彈出視窗被封鎖 — 已改為複製，請手動貼到 WhatsApp'
+      : 'Pop-up blocked — copied instead; paste into WhatsApp manually'));
+  } else {
+    logSend('🟢', [{ supplier, day: mode === 'tomorrow' ? nextDeliverySlot(MASTER().find(i => i.supplier === supplier)) : activeDay, rows: getVendorRows(supplier).map(({ item, qty }) => ({ item, qty })) }]);
+    showToast(lang === 'zh' ? '已開啟 WhatsApp — 選擇群組後送出' : 'WhatsApp opened — pick the group and send');
+  }
+}
+
 /** Shared plain-text order builder (used by Copy and WhatsApp forward) */
 function buildOrderText() {
   let text = lang === 'zh' ? `【${brandTitle()} 訂貨】\n` : `[${brandTitle()} Order]\n`;
@@ -1278,6 +1551,26 @@ function buildOrderText() {
       text += `\n━━━━━━━━━━\n🏪 ${supplier}\n📅 送貨日：${fmtDeliv(slot)}\n`;
       items.forEach(item => {
         const s = state[item.id];
+        const name = (lang === 'zh' || !item.item_en) ? item.item_zh : item.item_en;
+        text += `• ${name}  ${qtyPlain(item, s.qty)}\n`;
+      });
+    }
+  } else if (mode === 'preorder') {
+    const groups = {};
+    MASTER().forEach(item => {
+      const s = preorderState[item.id];
+      if (!s || s.skipped || s.qty <= 0) return;
+      const sl = nextDeliverySlotForDate(item, preorderDate), k = item.supplier + '||' + sl;
+      if (!groups[k]) groups[k] = { supplier: item.supplier, slot: sl, items: [] };
+      groups[k].items.push(item);
+    });
+    const preDate = preorderDate || '';
+    text += `\n📅 ${lang === 'zh' ? '預訂日' : 'Pre-order'}：${preDate}\n`;
+    for (const { supplier, slot, items } of Object.values(groups)) {
+      const meta = SUPPLIER_META[supplier] || {};
+      text += `\n━━━━━━━━━━\n🏪 ${supplier}\n📅 送貨日：${fmtDeliv(slot)}\n`;
+      items.forEach(item => {
+        const s = preorderState[item.id];
         const name = (lang === 'zh' || !item.item_en) ? item.item_zh : item.item_en;
         text += `• ${name}  ${qtyPlain(item, s.qty)}\n`;
       });
@@ -1305,7 +1598,7 @@ function buildOrderText() {
 function copyText() {
   copyTextUtil(buildOrderText()).then(() => {
     logSend('📄', collectOrderGroups());
-    showToast(lang === 'zh' ? '✅ 已複製 — 請到 WhatsApp 群組貼上並送出' : '✅ Copied — paste it into the WhatsApp group and send');
+    showToast(lang === 'zh' ? '✅ 已複製 — 請到 WhatsApp 群組貼上並送出\n💡 貼上後請檢查數量是否正確' : '✅ Copied — paste it into the WhatsApp group and send\n💡 Please double-check quantities after pasting');
   }).catch(() => showToast('Copy failed'));
 }
 /** One-button forward: opens WhatsApp with the order pre-filled; user picks the group and taps send */
@@ -1449,6 +1742,17 @@ function collectOrderGroups() {
       if (!s || s.skipped || s.qty <= 0) return;
       if (activeCategory !== 'all' && (item.cat || '') !== activeCategory) return;
       const sl = nextDeliverySlot(item), k = item.supplier + '||' + sl;
+      if (!map[k]) map[k] = { supplier: item.supplier, day: sl, rows: [] };
+      map[k].rows.push({ item, qty: s.qty });
+    });
+    return Object.values(map);
+  } else if (mode === 'preorder') {
+    const map = {};
+    MASTER().forEach(item => {
+      const s = preorderState[item.id];
+      if (!s || s.skipped || s.qty <= 0) return;
+      if (activeCategory !== 'all' && (item.cat || '') !== activeCategory) return;
+      const sl = nextDeliverySlotForDate(item, preorderDate), k = item.supplier + '||' + sl;
       if (!map[k]) map[k] = { supplier: item.supplier, day: sl, rows: [] };
       map[k].rows.push({ item, qty: s.qty });
     });
@@ -1875,6 +2179,14 @@ document.addEventListener('click', e => {
     e.stopPropagation();
     const day = parseInt(btn.getAttribute('data-day'), 10);
     showVendorPhoto(resolveSupplier(ref) || ref, day);
+  } else if (action === 'vendor-copy') {
+    e.preventDefault();
+    e.stopPropagation();
+    copySupplierOrder(resolveSupplier(ref) || ref);
+  } else if (action === 'vendor-wa') {
+    e.preventDefault();
+    e.stopPropagation();
+    forwardSupplierWhatsApp(resolveSupplier(ref) || ref);
   }
 });
 
